@@ -219,7 +219,7 @@ impl Completer {
                                     word if syntax.is_type(word) => TokenType::Type,
                                     _ => TokenType::Literal,
                                 };
-                                let fmt = format_token(theme, fontsize, token_type);
+                                let fmt = format_token(theme, fontsize, token_type, None);
                                 let colored_text = egui::text::LayoutJob::single_section(word, fmt);
                                 let selected = i == self.variant_id;
 

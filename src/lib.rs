@@ -93,7 +93,7 @@ pub use crate::completer::Completer;
 
 #[cfg(feature = "egui")]
 pub trait Editor: Hash {
-    fn append(&self, job: &mut LayoutJob, token: &Token);
+    fn append(&self, job: &mut LayoutJob, token: &Token, line: usize);
     fn syntax(&self) -> &Syntax;
 }
 
@@ -112,6 +112,13 @@ pub struct CodeEditor {
     vscroll: bool,
     stick_to_bottom: bool,
     desired_width: f32,
+    highlights: Vec<LineHighlight>,
+}
+
+#[derive(Clone, Debug, PartialEq, Hash)]
+pub struct LineHighlight {
+    pub line: usize,
+    pub color: egui::Color32,
 }
 
 #[cfg(feature = "editor")]
@@ -121,6 +128,7 @@ impl Hash for CodeEditor {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         (self.fontsize as u32).hash(state);
         self.syntax.hash(state);
+        self.highlights.hash(state);
     }
 }
 
@@ -140,6 +148,7 @@ impl Default for CodeEditor {
             vscroll: true,
             stick_to_bottom: false,
             desired_width: f32::INFINITY,
+            highlights: Vec::new(),
         }
     }
 }
@@ -217,6 +226,13 @@ impl CodeEditor {
         CodeEditor { syntax, ..self }
     }
 
+    /// Use custom line highlights
+    ///
+    /// **Default: Vec::new()**
+    pub fn with_highlights(self, highlights: Vec<LineHighlight>) -> Self {
+        CodeEditor { highlights, ..self }
+    }
+
     /// Turn on/off scrolling on the vertical axis.
     ///
     /// **Default: true**
@@ -260,8 +276,12 @@ impl CodeEditor {
     }
 
     #[cfg(feature = "egui")]
-    pub fn format_token(&self, ty: TokenType) -> egui::text::TextFormat {
-        format_token(&self.theme, self.fontsize, ty)
+    pub fn format_token(&self, ty: TokenType, line: usize) -> egui::text::TextFormat {
+        use std::ops::Sub;
+
+        let highlight = self.highlights.iter().find(|hl| hl.line.sub(1) == line);
+
+        format_token(&self.theme, self.fontsize, ty, highlight)
     }
 
     #[cfg(feature = "egui")]
@@ -360,7 +380,7 @@ impl CodeEditor {
                         let output = egui::TextEdit::multiline(text)
                             .id_source(&self.id)
                             .lock_focus(true)
-                            .desired_rows(self.rows)
+                            .desired_rows(1)
                             .frame(true)
                             .desired_width(self.desired_width)
                             .layouter(&mut layouter)
@@ -385,9 +405,9 @@ impl CodeEditor {
 #[cfg(feature = "editor")]
 #[cfg(feature = "egui")]
 impl Editor for CodeEditor {
-    fn append(&self, job: &mut LayoutJob, token: &Token) {
+    fn append(&self, job: &mut LayoutJob, token: &Token, line: usize) {
         if !token.buffer().is_empty() {
-            job.append(token.buffer(), 0.0, self.format_token(token.ty()));
+            job.append(token.buffer(), 0.0, self.format_token(token.ty(), line));
         }
     }
 
@@ -397,8 +417,20 @@ impl Editor for CodeEditor {
 }
 
 #[cfg(feature = "egui")]
-pub fn format_token(theme: &ColorTheme, fontsize: f32, ty: TokenType) -> egui::text::TextFormat {
+pub fn format_token(
+    theme: &ColorTheme,
+    fontsize: f32,
+    ty: TokenType,
+    highlight: Option<&LineHighlight>,
+) -> egui::text::TextFormat {
     let font_id = egui::FontId::monospace(fontsize);
     let color = theme.type_color(ty);
-    egui::text::TextFormat::simple(font_id, color)
+
+    let mut format = egui::text::TextFormat::simple(font_id, color);
+
+    if let Some(highlight) = highlight {
+        format.background = highlight.color;
+    }
+
+    format
 }
