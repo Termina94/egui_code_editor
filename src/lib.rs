@@ -277,9 +277,10 @@ impl CodeEditor {
 
     #[cfg(feature = "egui")]
     pub fn format_token(&self, ty: TokenType, line: usize) -> egui::text::TextFormat {
-        use std::ops::Sub;
-
-        let highlight = self.highlights.iter().find(|hl| hl.line.sub(1) == line);
+        let highlight = self
+            .highlights
+            .iter()
+            .find(|hl| (1.max(hl.line) - 1) == line);
 
         format_token(&self.theme, self.fontsize, ty, highlight)
     }
