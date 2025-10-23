@@ -68,7 +68,7 @@
 //! }
 //! ```
 #[cfg(feature = "egui")]
-mod completer;
+pub mod completer;
 pub mod highlighting;
 mod syntax;
 #[cfg(test)]
