@@ -3,7 +3,7 @@ mod trie;
 
 use std::collections::BTreeSet;
 
-use crate::{ColorTheme, Syntax, Token, TokenType, format_token};
+use crate::{CodeEditor, ColorTheme, Syntax, Token, TokenType, format_token};
 use custom_types::{CompletionItem, CustomTypeRegistry};
 use egui::{Event, Frame, Modifiers, Sense, Stroke, TextBuffer, text_edit::TextEditOutput};
 use trie::Trie;
@@ -61,6 +61,29 @@ impl Completer {
             trie_user: Some(Trie::default()),
             ..self
         }
+    }
+
+    // Register a type that implements the CustomType trait (builder pattern)
+    /// This is the recommended way to register custom types
+    ///
+    /// # Example
+    /// ```rust
+    /// let completer = Completer::new_with_syntax(&Syntax::rust())
+    ///     .with_trait_type::<MyCharacter>();
+    /// ```
+    pub fn with_trait_type<T: custom_types::CustomType>(mut self) -> Self {
+        self.custom_types.register_trait_type::<T>();
+        self
+    }
+
+    /// Register a type that implements the CustomType trait on an existing completer
+    ///
+    /// # Example
+    /// ```rust
+    /// completer.register_trait_type::<MyCharacter>();
+    /// ```
+    pub fn register_trait_type<T: custom_types::CustomType>(&mut self) {
+        self.custom_types.register_trait_type::<T>();
     }
 
     pub fn custom_types(&self) -> &CustomTypeRegistry {
@@ -482,8 +505,15 @@ impl Completer {
                 let text_before_cursor = text.char_range(0..cursor.index);
 
                 // Find the start of the current completion context
+                // Include ':' as a valid separator only if any registered type uses colon syntax
+                let has_colon_syntax = self.custom_types.has_colon_syntax();
                 let context_start = text_before_cursor
-                    .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+                    .rfind(|c: char| {
+                        !c.is_alphanumeric()
+                            && c != '_'
+                            && c != '.'
+                            && !(has_colon_syntax && c == ':')
+                    })
                     .map(|pos| pos + 1)
                     .unwrap_or(0);
 
@@ -590,42 +620,14 @@ impl Completer {
                                     .show(ui, |ui| {
                                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
 
-                                        // Split docs by lines and format
-                                        for line in docs.lines() {
-                                            if line.trim().is_empty() {
-                                                ui.add_space(4.0);
-                                            } else if line.starts_with("# ") {
-                                                // Header
-                                                ui.heading(line.trim_start_matches("# "));
-                                            } else if line.starts_with("## ") {
-                                                // Subheader
-                                                ui.label(
-                                                    egui::RichText::new(
-                                                        line.trim_start_matches("## "),
-                                                    )
-                                                    .strong()
-                                                    .size(fontsize * 1.1),
-                                                );
-                                            } else if line.starts_with("- ") {
-                                                // List item
-                                                ui.horizontal(|ui| {
-                                                    ui.label("  •");
-                                                    ui.label(line.trim_start_matches("- "));
-                                                });
-                                            } else if line.starts_with("`") && line.ends_with("`") {
-                                                // Inline code
-                                                ui.label(
-                                                    egui::RichText::new(line.trim_matches('`'))
-                                                        .monospace()
-                                                        .color(
-                                                            theme.type_color(TokenType::Literal),
-                                                        ),
-                                                );
-                                            } else {
-                                                // Regular text
-                                                ui.label(line);
-                                            }
-                                        }
+                                        let mut editor = CodeEditor::default()
+                                            .readonly(true)
+                                            .with_fontsize(14.0)
+                                            .with_theme(theme.clone())
+                                            .with_syntax(syntax.to_owned())
+                                            .with_numlines(false);
+
+                                        editor.show(ui, &mut docs.clone());
                                     });
                             });
                         }

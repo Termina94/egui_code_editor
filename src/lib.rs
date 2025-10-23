@@ -113,6 +113,7 @@ pub struct CodeEditor {
     stick_to_bottom: bool,
     desired_width: f32,
     highlights: Vec<LineHighlight>,
+    readonly: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Hash)]
@@ -149,6 +150,7 @@ impl Default for CodeEditor {
             stick_to_bottom: false,
             desired_width: f32::INFINITY,
             highlights: Vec::new(),
+            readonly: false,
         }
     }
 }
@@ -160,6 +162,10 @@ impl CodeEditor {
             id: id_source.into(),
             ..self
         }
+    }
+
+    pub fn readonly(self, readonly: bool) -> Self {
+        CodeEditor { readonly, ..self }
     }
 
     /// Minimum number of rows to show.
@@ -382,6 +388,7 @@ impl CodeEditor {
                             .id_source(&self.id)
                             .lock_focus(true)
                             .desired_rows(1)
+                            .interactive(!self.readonly)
                             .frame(true)
                             .desired_width(self.desired_width)
                             .layouter(&mut layouter)
