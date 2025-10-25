@@ -378,32 +378,38 @@ impl Completer {
             } else if i.consume_key(Modifiers::NONE, egui::Key::Tab) {
                 if let Some((display, item)) = self.completions.get(self.variant_id) {
                     // Determine what to delete and what to insert
-                    let (delete_count, insert_text) = if let Some((type_part, _method_part)) =
-                        display.rsplit_once('.')
-                    {
-                        // We're completing something like "self.move_to"
-                        // prefix is "self.mo", we want to replace just the "mo" part
+                    // Check for both dot and colon separators
+                    let separator_split = display
+                        .rsplit_once('.')
+                        .or_else(|| display.rsplit_once(':'));
 
-                        if let Some((prefix_type, prefix_method)) = self.prefix.rsplit_once('.') {
-                            // Delete only the partial method part after the dot
-                            let delete = prefix_method.len();
-                            let insert = if item.snippet.is_some() {
-                                item.insert_text().to_string()
+                    let (delete_count, insert_text) =
+                        if let Some((type_part, _method_part)) = separator_split {
+                            let prefix_split = self
+                                .prefix
+                                .rsplit_once('.')
+                                .or_else(|| self.prefix.rsplit_once(':'));
+
+                            if let Some((prefix_type, prefix_method)) = prefix_split {
+                                // Delete only the partial method part after the separator
+                                let delete = prefix_method.len();
+                                let insert = if item.snippet.is_some() {
+                                    item.insert_text().to_string()
+                                } else {
+                                    _method_part.to_string()
+                                };
+                                (delete, insert)
                             } else {
-                                _method_part.to_string()
-                            };
-                            (delete, insert)
+                                // Shouldn't happen, but fallback to replacing everything
+                                let delete = self.prefix_range.1 - self.prefix_range.0;
+                                (delete, display.clone())
+                            }
                         } else {
-                            // Shouldn't happen, but fallback to replacing everything
+                            // Regular completion (no separator), replace the entire prefix
                             let delete = self.prefix_range.1 - self.prefix_range.0;
-                            (delete, display.clone())
-                        }
-                    } else {
-                        // Regular completion (no dot), replace the entire prefix
-                        let delete = self.prefix_range.1 - self.prefix_range.0;
-                        let insert = item.insert_text().to_string();
-                        (delete, insert)
-                    };
+                            let insert = item.insert_text().to_string();
+                            (delete, insert)
+                        };
 
                     // Calculate cursor offset if there's a $ marker
                     let (final_text, cursor_offset) = if insert_text.contains('$') {
@@ -517,8 +523,16 @@ impl Completer {
                     .map(|pos| pos + 1)
                     .unwrap_or(0);
 
-                self.prefix = text_before_cursor[context_start..].to_string();
-                self.prefix_range = (context_start, cursor.index);
+                // Find the first valid char boundary at or before context_start
+                let safe_start = text_before_cursor
+                    .char_indices()
+                    .take_while(|(i, _)| *i <= context_start)
+                    .last()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+
+                self.prefix = text_before_cursor[safe_start..].to_string();
+                self.prefix_range = (safe_start, cursor.index);
             } else {
                 self.prefix = String::new();
                 self.prefix_range = (cursor.index, cursor.index);
