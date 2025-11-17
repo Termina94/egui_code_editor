@@ -302,8 +302,6 @@ impl Completer {
         self.trie_syntax.push(word);
     }
 
-    /// If using Completer without CodeEditor this method should be called before text-editing widget.
-    /// Up/Down arrows for selection, Tab for completion, Esc for hiding
     pub fn handle_input(&mut self, ctx: &egui::Context) {
         if self.prefix.is_empty() {
             return;
@@ -375,7 +373,9 @@ impl Completer {
                 } else {
                     self.variant_id.saturating_sub(1)
                 };
-            } else if i.consume_key(Modifiers::NONE, egui::Key::Tab) {
+            } else if i.consume_key(Modifiers::NONE, egui::Key::Tab)
+                || i.consume_key(Modifiers::NONE, egui::Key::Enter)
+            {
                 if let Some((display, item)) = self.completions.get(self.variant_id) {
                     // Determine what to delete and what to insert
                     // Check for both dot and colon separators
