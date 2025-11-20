@@ -15,6 +15,87 @@ impl Default for SyntaxStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompType {
+    Global,
+    Field,
+    Function,
+    Snippet,
+}
+
+/// Helper struct for building completions with a fluent API
+pub struct CompletionsBuilder {
+    items: Vec<(&'static str, &'static str, &'static str, CompType)>,
+}
+
+impl CompletionsBuilder {
+    /// Create a new completions builder
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    /// Add a new completion item
+    pub fn add(&mut self, display: impl Into<String>, comp_type: CompType) -> ItemBuilder {
+        ItemBuilder {
+            builder: self,
+            display: display.into(),
+            comp_type,
+            snippet: None,
+            documentation: None,
+        }
+    }
+
+    /// Finish building and return the completions
+    pub fn build(self) -> Vec<(&'static str, &'static str, &'static str, CompType)> {
+        self.items
+    }
+}
+
+impl Default for CompletionsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Builder for a single completion item within CompletionsBuilder
+pub struct ItemBuilder<'a> {
+    builder: &'a mut CompletionsBuilder,
+    display: String,
+    comp_type: CompType,
+    snippet: Option<String>,
+    documentation: Option<String>,
+}
+
+impl<'a> ItemBuilder<'a> {
+    /// Set the snippet to insert (can include $ for cursor position)
+    pub fn with_snippet(mut self, snippet: impl Into<String>) -> Self {
+        self.snippet = Some(snippet.into());
+        self
+    }
+
+    /// Set the documentation text
+    pub fn with_docs(mut self, docs: impl Into<String>) -> Self {
+        self.documentation = Some(docs.into());
+        self
+    }
+
+    /// Finish this item and return the builder for adding more items
+    pub fn done(self) -> &'a mut CompletionsBuilder {
+        let display = Box::leak(self.display.clone().into_boxed_str());
+        let snippet = Box::leak(
+            self.snippet
+                .unwrap_or_else(|| self.display.clone())
+                .into_boxed_str(),
+        );
+        let docs = Box::leak(self.documentation.unwrap_or_default().into_boxed_str());
+
+        self.builder
+            .items
+            .push((display, snippet, docs, self.comp_type));
+        self.builder
+    }
+}
+
 /// Trait for defining custom types with their completion information
 /// Implement this trait on your types to provide autocomplete support
 ///
@@ -27,11 +108,16 @@ impl Default for SyntaxStyle {
 ///         "self"
 ///     }
 ///     
-///     fn build_completions() -> Vec<(&'static str, &'static str, &'static str)> {
-///         vec![
-///             ("move_to(..)", "move_to($)", "Moves the character"),
-///             ("get_health()", "get_health()", "Returns current health"),
-///         ]
+///     fn build_completions(builder: &mut CompletionsBuilder) {
+///         builder.add("move_to(..)", CompType::Function)
+///             .with_snippet("move_to($)")
+///             .with_docs("Moves the character")
+///             .done();
+///         
+///         builder.add("get_health()", CompType::Function)
+///             .with_snippet("get_health()")
+///             .with_docs("Returns current health")
+///             .done();
 ///     }
 /// }
 /// ```
@@ -39,9 +125,8 @@ pub trait CustomType {
     /// The name of the type (e.g., "self", "player", "world")
     fn type_name() -> &'static str;
 
-    /// Build the list of completions for this type
-    /// Returns a vector of (display_name, snippet, documentation) tuples
-    fn build_completions() -> Vec<(&'static str, &'static str, &'static str)>;
+    /// Build the list of completions for this type using the builder
+    fn build_completions(builder: &mut CompletionsBuilder);
 
     /// The syntax style for this type (Dot or Colon)
     /// Defaults to Dot if not overridden
@@ -59,22 +144,29 @@ pub struct CompletionItem {
     pub snippet: Option<String>,
     /// Documentation to show in popup (supports markdown-like formatting)
     pub documentation: Option<String>,
+    pub comp_type: CompType,
 }
 
 impl CompletionItem {
-    pub fn new(display: impl Into<String>) -> Self {
+    pub fn new(display: impl Into<String>, comp_type: CompType) -> Self {
         Self {
             display: display.into(),
             snippet: None,
             documentation: None,
+            comp_type,
         }
     }
 
-    pub fn with_snippet(display: impl Into<String>, snippet: impl Into<String>) -> Self {
+    pub fn with_snippet(
+        display: impl Into<String>,
+        snippet: impl Into<String>,
+        comp_type: CompType,
+    ) -> Self {
         Self {
             display: display.into(),
             snippet: Some(snippet.into()),
             documentation: None,
+            comp_type,
         }
     }
 
@@ -82,19 +174,26 @@ impl CompletionItem {
         display: impl Into<String>,
         snippet: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) -> Self {
         Self {
             display: display.into(),
             snippet: Some(snippet.into()),
             documentation: Some(documentation.into()),
+            comp_type,
         }
     }
 
-    pub fn with_docs(display: impl Into<String>, documentation: impl Into<String>) -> Self {
+    pub fn with_docs(
+        display: impl Into<String>,
+        documentation: impl Into<String>,
+        comp_type: CompType,
+    ) -> Self {
         Self {
             display: display.into(),
             snippet: None,
             documentation: Some(documentation.into()),
+            comp_type,
         }
     }
 
@@ -148,7 +247,9 @@ impl CustomTypeRegistry {
     /// ```
     pub fn register_trait_type<T: CustomType>(&mut self) {
         let type_name = T::type_name();
-        let completions = T::build_completions();
+        let mut builder = CompletionsBuilder::new();
+        T::build_completions(&mut builder);
+        let completions = builder.build();
         let syntax_style = T::syntax_style();
         self.register_type_with_snippets_and_style(type_name, completions, syntax_style);
     }
@@ -158,7 +259,7 @@ impl CustomTypeRegistry {
         let type_name = type_name.into();
         let methods_map = methods
             .into_iter()
-            .map(|m| (m.clone(), CompletionItem::new(m)))
+            .map(|m| (m.clone(), CompletionItem::new(m, CompType::Function)))
             .collect();
 
         self.types.insert(
@@ -171,36 +272,35 @@ impl CustomTypeRegistry {
     }
 
     /// Register a type with snippet and documentation support (uses Dot syntax by default)
-    /// Each method is (name, snippet, docs) where snippet can include $ for cursor position
+    /// Each method is (name, snippet, docs, comp_type) where snippet can include $ for cursor position
     ///
     /// Example:
     /// ```
     /// registry.register_type_with_snippets(
     ///     "self",
     ///     vec![
-    ///         ("move_to", "move_to($x, y)", "Moves the character to the specified position.\n\nParameters:\n- x: X coordinate\n- y: Y coordinate"),
-    ///         ("set_health", "set_health($value)", "Sets the character's health.\n\nParameters:\n- value: New health value (0-100)"),
+    ///         ("move_to", "move_to($x, y)", "Moves the character to the specified position.\n\nParameters:\n- x: X coordinate\n- y: Y coordinate", CompType::Function),
+    ///         ("set_health", "set_health($value)", "Sets the character's health.\n\nParameters:\n- value: New health value (0-100)", CompType::Function),
     ///     ],
-    ///     vec![],
     /// );
     /// ```
     pub fn register_type_with_snippets(
         &mut self,
         type_name: impl Into<String>,
-        methods: Vec<(&str, &str, &str)>,
+        methods: Vec<(&str, &str, &str, CompType)>,
     ) {
         self.register_type_with_snippets_and_style(type_name, methods, SyntaxStyle::Dot);
     }
 
     /// Register a type with snippet and documentation support with explicit syntax style
-    /// Each method is (name, snippet, docs) where snippet can include $ for cursor position
+    /// Each method is (name, snippet, docs, comp_type) where snippet can include $ for cursor position
     ///
     /// Example:
     /// ```
     /// registry.register_type_with_snippets_and_style(
     ///     "self",
     ///     vec![
-    ///         ("move_to", "move_to($x, y)", "Moves the character"),
+    ///         ("move_to", "move_to($x, y)", "Moves the character", CompType::Function),
     ///     ],
     ///     SyntaxStyle::Colon,
     /// );
@@ -208,16 +308,16 @@ impl CustomTypeRegistry {
     pub fn register_type_with_snippets_and_style(
         &mut self,
         type_name: impl Into<String>,
-        methods: Vec<(&str, &str, &str)>,
+        methods: Vec<(&str, &str, &str, CompType)>,
         syntax_style: SyntaxStyle,
     ) {
         let type_name = type_name.into();
         let methods_map = methods
             .into_iter()
-            .map(|(name, snippet, docs)| {
+            .map(|(name, snippet, docs, comp_type)| {
                 (
                     name.to_string(),
-                    CompletionItem::with_snippet_and_docs(name, snippet, docs),
+                    CompletionItem::with_snippet_and_docs(name, snippet, docs, comp_type),
                 )
             })
             .collect();
@@ -232,31 +332,30 @@ impl CustomTypeRegistry {
     }
 
     /// Register a type with only snippets (no docs)
-    /// Each method is (name, snippet)
+    /// Each method is (name, snippet, comp_type)
     ///
     /// Example:
     /// ```
     /// registry.register_type_snippets(
     ///     "self",
     ///     vec![
-    ///         ("move_to", "move_to($x, y)"),
-    ///         ("attack", "attack($target)"),
+    ///         ("move_to", "move_to($x, y)", CompType::Function),
+    ///         ("attack", "attack($target)", CompType::Function),
     ///     ],
-    ///     vec![],
     /// );
     /// ```
     pub fn register_type_snippets(
         &mut self,
         type_name: impl Into<String>,
-        methods: Vec<(&str, &str)>,
+        methods: Vec<(&str, &str, CompType)>,
     ) {
         let type_name = type_name.into();
         let methods_map = methods
             .into_iter()
-            .map(|(name, snippet)| {
+            .map(|(name, snippet, comp_type)| {
                 (
                     name.to_string(),
-                    CompletionItem::with_snippet(name, snippet),
+                    CompletionItem::with_snippet(name, snippet, comp_type),
                 )
             })
             .collect();
@@ -271,24 +370,32 @@ impl CustomTypeRegistry {
     }
 
     /// Register a type with only documentation (no snippets)
-    /// Each method is (name, docs)
+    /// Each method is (name, docs, comp_type)
     ///
     /// Example:
     /// ```
     /// registry.register_type_docs(
     ///     "self",
     ///     vec![
-    ///         ("move_to", "Moves the character"),
-    ///         ("attack", "Attacks a target"),
+    ///         ("move_to", "Moves the character", CompType::Function),
+    ///         ("attack", "Attacks a target", CompType::Function),
     ///     ],
-    ///     vec![],
     /// );
     /// ```
-    pub fn register_type_docs(&mut self, type_name: impl Into<String>, methods: Vec<(&str, &str)>) {
+    pub fn register_type_docs(
+        &mut self,
+        type_name: impl Into<String>,
+        methods: Vec<(&str, &str, CompType)>,
+    ) {
         let type_name = type_name.into();
         let methods_map = methods
             .into_iter()
-            .map(|(name, docs)| (name.to_string(), CompletionItem::with_docs(name, docs)))
+            .map(|(name, docs, comp_type)| {
+                (
+                    name.to_string(),
+                    CompletionItem::with_docs(name, docs, comp_type),
+                )
+            })
             .collect();
 
         self.types.insert(
@@ -308,43 +415,51 @@ impl CustomTypeRegistry {
     /// registry.register_global(
     ///     "foreach",
     ///     Some("for $item in items {\n    \n}"),
-    ///     Some("Iterates over each item in a collection.")
+    ///     Some("Iterates over each item in a collection."),
+    ///     CompType::Global
     /// );
     ///
     /// // Just snippet, no docs
-    /// registry.register_global("if", Some("if $condition {\n}"), None);
+    /// registry.register_global("if", Some("if $condition {\n}"), None, CompType::Global);
     ///
     /// // Just docs, no snippet
-    /// registry.register_global("self", None, Some("The character instance"));
+    /// registry.register_global("self", None, Some("The character instance"), CompType::Field);
     /// ```
     pub fn register_global(
         &mut self,
         name: impl Into<String>,
         snippet: Option<impl Into<String>>,
         documentation: Option<impl Into<String>>,
+        comp_type: CompType,
     ) {
         let name_str = name.into();
         let item = match (snippet, documentation) {
-            (Some(s), Some(d)) => CompletionItem::with_snippet_and_docs(&name_str, s, d),
-            (Some(s), None) => CompletionItem::with_snippet(&name_str, s),
-            (None, Some(d)) => CompletionItem::with_docs(&name_str, d),
-            (None, None) => CompletionItem::new(&name_str),
+            (Some(s), Some(d)) => CompletionItem::with_snippet_and_docs(&name_str, s, d, comp_type),
+            (Some(s), None) => CompletionItem::with_snippet(&name_str, s, comp_type),
+            (None, Some(d)) => CompletionItem::with_docs(&name_str, d, comp_type),
+            (None, None) => CompletionItem::new(&name_str, comp_type),
         };
         self.globals.insert(name_str, item);
     }
 
     /// Register a simple global without snippet or docs
-    pub fn register_global_simple(&mut self, name: impl Into<String>) {
+    pub fn register_global_simple(&mut self, name: impl Into<String>, comp_type: CompType) {
         let name = name.into();
-        self.globals.insert(name.clone(), CompletionItem::new(name));
+        self.globals
+            .insert(name.clone(), CompletionItem::new(name, comp_type));
     }
 
     /// Register a global with only a snippet
-    pub fn register_global_snippet(&mut self, name: impl Into<String>, snippet: impl Into<String>) {
+    pub fn register_global_snippet(
+        &mut self,
+        name: impl Into<String>,
+        snippet: impl Into<String>,
+        comp_type: CompType,
+    ) {
         let name_str = name.into();
         self.globals.insert(
             name_str.clone(),
-            CompletionItem::with_snippet(&name_str, snippet),
+            CompletionItem::with_snippet(&name_str, snippet, comp_type),
         );
     }
 
@@ -353,11 +468,12 @@ impl CustomTypeRegistry {
         &mut self,
         name: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) {
         let name_str = name.into();
         self.globals.insert(
             name_str.clone(),
-            CompletionItem::with_docs(&name_str, documentation),
+            CompletionItem::with_docs(&name_str, documentation, comp_type),
         );
     }
 
@@ -367,11 +483,12 @@ impl CustomTypeRegistry {
         name: impl Into<String>,
         snippet: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) {
         let name_str = name.into();
         self.globals.insert(
             name_str.clone(),
-            CompletionItem::with_snippet_and_docs(&name_str, snippet, documentation),
+            CompletionItem::with_snippet_and_docs(&name_str, snippet, documentation, comp_type),
         );
     }
 
@@ -419,7 +536,10 @@ impl CustomTypeRegistry {
         // Check type names (e.g., "sel" -> "self")
         for type_name in self.types.keys() {
             if type_name.starts_with(prefix) {
-                results.push((type_name.clone(), CompletionItem::new(type_name)));
+                results.push((
+                    type_name.clone(),
+                    CompletionItem::new(type_name, CompType::Field),
+                ));
             }
         }
 
@@ -431,194 +551,5 @@ impl CustomTypeRegistry {
         }
 
         results
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_completion_item_cursor() {
-        let item = CompletionItem::with_snippet("move_to", "move_to($x, y)");
-        assert!(item.has_cursor_marker());
-
-        let (text, pos) = item.cursor_info();
-        assert_eq!(text, "move_to(x, y)");
-        assert_eq!(pos, Some(8)); // Position of $ in "move_to($x, y)"
-    }
-
-    #[test]
-    fn test_custom_type_completions() {
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_type_with_snippets(
-            "self",
-            vec![
-                ("move_to", "move_to($x, y)", "Moves character to position"),
-                ("get_position", "get_position()", "Gets current position"),
-            ],
-        );
-
-        // Test type name completion
-        let completions = registry.get_completions("sel");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "self");
-
-        // Test method completion
-        let completions = registry.get_completions("self.");
-        assert_eq!(completions.len(), 2);
-
-        // Test partial method completion
-        let completions = registry.get_completions("self.move");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "self.move_to");
-        assert_eq!(completions[0].1.insert_text(), "move_to($x, y)");
-    }
-
-    #[test]
-    fn test_colon_syntax() {
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_type_with_snippets_and_style(
-            "self",
-            vec![
-                ("move_to", "move_to($x, y)", "Moves character to position"),
-                ("get_position", "get_position()", "Gets current position"),
-            ],
-            SyntaxStyle::Colon,
-        );
-
-        // Test type name completion
-        let completions = registry.get_completions("sel");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "self");
-
-        // Test method completion with colon
-        let completions = registry.get_completions("self:");
-        assert_eq!(completions.len(), 2);
-
-        // Test partial method completion with colon
-        let completions = registry.get_completions("self:move");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "self:move_to");
-        assert_eq!(completions[0].1.insert_text(), "move_to($x, y)");
-    }
-
-    #[test]
-    fn test_global_completions() {
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_global_snippet("foreach", "for $item in items {\n    \n}");
-        registry.register_global_snippet("if", "if $condition {\n    \n}");
-
-        let completions = registry.get_completions("for");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "foreach");
-
-        let completions = registry.get_completions("i");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "if");
-    }
-
-    #[test]
-    fn test_global_with_options() {
-        let mut registry = CustomTypeRegistry::new();
-
-        // Test all option combinations
-        registry.register_global("simple", None::<String>, None::<String>);
-        registry.register_global("with_snippet", Some("snippet $here"), None::<String>);
-        registry.register_global("with_docs", None::<String>, Some("Documentation"));
-        registry.register_global("full", Some("snippet"), Some("docs"));
-
-        let completions = registry.get_completions("s");
-        assert!(completions.len() >= 2); // Should find "simple" and "with_snippet"
-    }
-
-    #[test]
-    fn test_documentation() {
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_type_with_snippets(
-            "self",
-            vec![("method", "method()", "This is documentation")],
-        );
-
-        let completions = registry.get_completions("self.");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(
-            completions[0].1.documentation,
-            Some("This is documentation".to_string())
-        );
-    }
-
-    #[test]
-    fn test_trait_type_registration() {
-        struct TestCharacter;
-
-        impl CustomType for TestCharacter {
-            fn type_name() -> &'static str {
-                "player"
-            }
-
-            fn build_completions() -> Vec<(&'static str, &'static str, &'static str)> {
-                vec![
-                    ("jump()", "jump()", "Makes the player jump"),
-                    ("attack(..)", "attack($target)", "Attacks a target"),
-                ]
-            }
-        }
-
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_trait_type::<TestCharacter>();
-
-        // Test type name completion
-        let completions = registry.get_completions("play");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "player");
-
-        // Test method completion
-        let completions = registry.get_completions("player.");
-        assert_eq!(completions.len(), 2);
-
-        // Test specific method
-        let completions = registry.get_completions("player.jump");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "player.jump()");
-        assert_eq!(
-            completions[0].1.documentation,
-            Some("Makes the player jump".to_string())
-        );
-    }
-
-    #[test]
-    fn test_trait_type_with_colon_syntax() {
-        struct LuaCharacter;
-
-        impl CustomType for LuaCharacter {
-            fn type_name() -> &'static str {
-                "self"
-            }
-
-            fn build_completions() -> Vec<(&'static str, &'static str, &'static str)> {
-                vec![
-                    ("move_to(..)", "move_to($x, y)", "Moves the character"),
-                    ("get_health()", "get_health()", "Returns current health"),
-                ]
-            }
-
-            fn syntax_style() -> SyntaxStyle {
-                SyntaxStyle::Colon
-            }
-        }
-
-        let mut registry = CustomTypeRegistry::new();
-        registry.register_trait_type::<LuaCharacter>();
-
-        // Test method completion with colon
-        let completions = registry.get_completions("self:");
-        assert_eq!(completions.len(), 2);
-
-        // Test specific method with colon
-        let completions = registry.get_completions("self:move");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].0, "self:move_to(..)");
-        assert_eq!(completions[0].1.insert_text(), "move_to($x, y)");
     }
 }

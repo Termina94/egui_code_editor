@@ -1,17 +1,14 @@
 pub mod custom_types;
 mod trie;
-
-use std::collections::BTreeSet;
-
 use crate::{CodeEditor, ColorTheme, Syntax, Token, TokenType, format_token};
-use custom_types::{CompletionItem, CustomTypeRegistry};
+use custom_types::{CompType, CompletionItem, CustomTypeRegistry};
 use egui::{Event, Frame, Modifiers, Sense, Stroke, TextBuffer, text_edit::TextEditOutput};
+use std::collections::BTreeSet;
 use trie::Trie;
 
 impl From<&Syntax> for Trie {
     fn from(syntax: &Syntax) -> Trie {
         let mut trie = Trie::default();
-
         syntax.keywords.iter().for_each(|word| trie.push(word));
         syntax.types.iter().for_each(|word| trie.push(word));
         syntax.special.iter().for_each(|word| trie.push(word));
@@ -104,15 +101,15 @@ impl Completer {
     ///     .with_custom_type_snippets_docs(
     ///         "self",
     ///         vec![
-    ///             ("move_to", "move_to($x, y)", "Moves character to position"),
-    ///             ("get_health", "get_health()", "Returns current health"),
+    ///             ("move_to", "move_to($x, y)", "Moves character to position", CompType::Function),
+    ///             ("get_health", "get_health()", "Returns current health", CompType::Function),
     ///         ],
     ///     );
     /// ```
     pub fn with_custom_type_snippets_docs(
         mut self,
         type_name: impl Into<String>,
-        methods: Vec<(&str, &str, &str)>,
+        methods: Vec<(&str, &str, &str, CompType)>,
     ) -> Self {
         self.custom_types
             .register_type_with_snippets(type_name, methods);
@@ -127,15 +124,15 @@ impl Completer {
     ///     .with_custom_type_snippets(
     ///         "self",
     ///         vec![
-    ///             ("move_to", "move_to($x, y)"),
-    ///             ("attack", "attack($target)"),
+    ///             ("move_to", "move_to($x, y)", CompType::Function),
+    ///             ("attack", "attack($target)", CompType::Function),
     ///         ],
     ///     );
     /// ```
     pub fn with_custom_type_snippets(
         mut self,
         type_name: impl Into<String>,
-        items: Vec<(&str, &str)>,
+        items: Vec<(&str, &str, CompType)>,
     ) -> Self {
         self.custom_types.register_type_snippets(type_name, items);
         self
@@ -149,15 +146,15 @@ impl Completer {
     ///     .with_custom_type_docs(
     ///         "self",
     ///         vec![
-    ///             ("move_to", "Moves character"),
-    ///             ("attack", "Attacks target"),
+    ///             ("move_to", "Moves character", CompType::Function),
+    ///             ("attack", "Attacks target", CompType::Function),
     ///         ],
     ///     );
     /// ```
     pub fn with_custom_type_docs(
         mut self,
         type_name: impl Into<String>,
-        items: Vec<(&str, &str)>,
+        items: Vec<(&str, &str, CompType)>,
     ) -> Self {
         self.custom_types.register_type_docs(type_name, items);
         self
@@ -169,26 +166,27 @@ impl Completer {
     /// ```
     /// // With docs
     /// let completer = Completer::new_with_syntax(&Syntax::rust())
-    ///     .with_global("foreach", Some("for $item in items {\n}"), Some("Iterate over items"));
+    ///     .with_global("foreach", Some("for $item in items {\n}"), Some("Iterate over items"), CompType::Global);
     ///
     /// // Just snippet
     /// let completer = Completer::new_with_syntax(&Syntax::rust())
-    ///     .with_global("if", Some("if $condition {\n}"), None);
+    ///     .with_global("if", Some("if $condition {\n}"), None, CompType::Global);
     /// ```
     pub fn with_global(
         mut self,
         name: impl Into<String>,
         snippet: Option<impl Into<String>>,
         documentation: Option<impl Into<String>>,
+        comp_type: CompType,
     ) -> Self {
         self.custom_types
-            .register_global(name, snippet, documentation);
+            .register_global(name, snippet, documentation, comp_type);
         self
     }
 
     /// Register a simple global (no snippet, no docs)
-    pub fn with_global_simple(mut self, name: impl Into<String>) -> Self {
-        self.custom_types.register_global_simple(name);
+    pub fn with_global_simple(mut self, name: impl Into<String>, comp_type: CompType) -> Self {
+        self.custom_types.register_global_simple(name, comp_type);
         self
     }
 
@@ -197,8 +195,10 @@ impl Completer {
         mut self,
         name: impl Into<String>,
         snippet: impl Into<String>,
+        comp_type: CompType,
     ) -> Self {
-        self.custom_types.register_global_snippet(name, snippet);
+        self.custom_types
+            .register_global_snippet(name, snippet, comp_type);
         self
     }
 
@@ -207,8 +207,10 @@ impl Completer {
         mut self,
         name: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) -> Self {
-        self.custom_types.register_global_docs(name, documentation);
+        self.custom_types
+            .register_global_docs(name, documentation, comp_type);
         self
     }
 
@@ -218,9 +220,10 @@ impl Completer {
         name: impl Into<String>,
         snippet: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) -> Self {
         self.custom_types
-            .register_global_snippet_docs(name, snippet, documentation);
+            .register_global_snippet_docs(name, snippet, documentation, comp_type);
         self
     }
 
@@ -233,7 +236,7 @@ impl Completer {
     pub fn register_custom_type_snippets_docs(
         &mut self,
         type_name: impl Into<String>,
-        items: Vec<(&str, &str, &str)>,
+        items: Vec<(&str, &str, &str, CompType)>,
     ) {
         self.custom_types
             .register_type_with_snippets(type_name, items);
@@ -243,7 +246,7 @@ impl Completer {
     pub fn register_custom_type_snippets(
         &mut self,
         type_name: impl Into<String>,
-        items: Vec<(&str, &str)>,
+        items: Vec<(&str, &str, CompType)>,
     ) {
         self.custom_types.register_type_snippets(type_name, items);
     }
@@ -252,7 +255,7 @@ impl Completer {
     pub fn register_custom_type_docs(
         &mut self,
         type_name: impl Into<String>,
-        items: Vec<(&str, &str)>,
+        items: Vec<(&str, &str, CompType)>,
     ) {
         self.custom_types.register_type_docs(type_name, items);
     }
@@ -263,19 +266,26 @@ impl Completer {
         name: impl Into<String>,
         snippet: Option<impl Into<String>>,
         documentation: Option<impl Into<String>>,
+        comp_type: CompType,
     ) {
         self.custom_types
-            .register_global(name, snippet, documentation);
+            .register_global(name, snippet, documentation, comp_type);
     }
 
     /// Register a simple global
-    pub fn register_global_simple(&mut self, name: impl Into<String>) {
-        self.custom_types.register_global_simple(name);
+    pub fn register_global_simple(&mut self, name: impl Into<String>, comp_type: CompType) {
+        self.custom_types.register_global_simple(name, comp_type);
     }
 
     /// Register a global with only a snippet
-    pub fn register_global_snippet(&mut self, name: impl Into<String>, snippet: impl Into<String>) {
-        self.custom_types.register_global_snippet(name, snippet);
+    pub fn register_global_snippet(
+        &mut self,
+        name: impl Into<String>,
+        snippet: impl Into<String>,
+        comp_type: CompType,
+    ) {
+        self.custom_types
+            .register_global_snippet(name, snippet, comp_type);
     }
 
     /// Register a global with only docs
@@ -283,8 +293,10 @@ impl Completer {
         &mut self,
         name: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) {
-        self.custom_types.register_global_docs(name, documentation);
+        self.custom_types
+            .register_global_docs(name, documentation, comp_type);
     }
 
     /// Register a global with snippet and docs
@@ -293,9 +305,10 @@ impl Completer {
         name: impl Into<String>,
         snippet: impl Into<String>,
         documentation: impl Into<String>,
+        comp_type: CompType,
     ) {
         self.custom_types
-            .register_global_snippet_docs(name, snippet, documentation);
+            .register_global_snippet_docs(name, snippet, documentation, comp_type);
     }
 
     pub fn push_word(&mut self, word: &str) {
@@ -306,6 +319,7 @@ impl Completer {
         if self.prefix.is_empty() {
             return;
         }
+
         if let Some(cursor) = self.ignore_cursor
             && cursor == self.cursor
         {
@@ -326,7 +340,10 @@ impl Completer {
             .chain(completions_user)
             .map(|suffix| {
                 let full_word = format!("{}{}", self.prefix, suffix);
-                (full_word.clone(), CompletionItem::new(full_word))
+                (
+                    full_word.clone(),
+                    CompletionItem::new(full_word, CompType::Global),
+                )
             })
             .collect();
 
@@ -461,6 +478,7 @@ impl Completer {
         if !editor_output.response.has_focus() {
             return;
         }
+
         let ctx = editor_output.response.ctx.clone();
         let galley = &editor_output.galley;
 
@@ -513,6 +531,7 @@ impl Completer {
                 // Find the start of the current completion context
                 // Include ':' as a valid separator only if any registered type uses colon syntax
                 let has_colon_syntax = self.custom_types.has_colon_syntax();
+
                 let context_start = text_before_cursor
                     .rfind(|c: char| {
                         !c.is_alphanumeric()
@@ -557,7 +576,6 @@ impl Completer {
                         * self.completions.len().min(10) as f32
                         - ui.style().spacing.item_spacing.y;
                     ui.set_height(height);
-
                     egui::ScrollArea::vertical()
                         .auto_shrink([true, true])
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -579,8 +597,8 @@ impl Completer {
                                 let fmt = format_token(theme, fontsize, token_type, None);
                                 let colored_text =
                                     egui::text::LayoutJob::single_section(display.clone(), fmt);
-                                let selected = i == self.variant_id;
 
+                                let selected = i == self.variant_id;
                                 let button = ui.add(
                                     egui::Button::new(colored_text)
                                         .sense(Sense::empty())
@@ -595,12 +613,12 @@ impl Completer {
                                             Stroke::NONE
                                         }),
                                 );
+
                                 if selected {
                                     button.scroll_to_me(None);
                                 }
                             }
                         });
-
                     // Return the popup rect for positioning the docs popup
                     ui.min_rect()
                 });
